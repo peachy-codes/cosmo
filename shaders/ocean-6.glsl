@@ -16,9 +16,9 @@
 #define COLOR_FOAM          vec3(0.95, 0.85, 0.75) 
 
 // --- Dynamic Sun Settings ---
-#define SUNSET_DURATION     10.0   //set to 6000  // Time in seconds for one full transit cycle
-#define SUN_START_POS       vec3(-10.0, 6.0, 10.0)  // Top Left coordinate setup
-#define SUN_END_POS         vec3(8.0, -0.5, 50.0)  // Bottom Right (Y is negative to sink below horizon)
+#define SUNSET_DURATION     6.0   //set to 6000  // Time in seconds for one full transit cycle
+#define SUN_START_POS       vec3(-3.0, 2.0, 10.0)  // (proposed -10, 6, 10)Top Left coordinate setup
+#define SUN_END_POS         vec3(4.0, 0.0, 20.0)  // (proposed 8, -.5, 50)  Bottom Right (Y is negative to sink below horizon)
 
 // --- Wave Geometry Profiles ---
 #define SWELL_SCALE         0.15     
@@ -31,28 +31,28 @@
 #define MICRO_CHOP_HEIGHT   0.03
 
 // --- Shading Modifiers ---
-#define SPECULAR_POWER      800.0    
-#define SPECULAR_INTENSITY  12.0     
-#define GLITTER_FREQUENCY   10.0     
+#define SPECULAR_POWER      300.0    
+#define SPECULAR_INTENSITY  2.0     
+#define GLITTER_FREQUENCY   7.1     
 #define GLITTER_SPEED       1.0
 #define GLITTER_ROUGHNESS   0.4     
 #define SCATTER_INTENSITY   0.19     
-#define ATMOSPHERE_FOG      0.1     
+#define ATMOSPHERE_FOG      0.05    
 
 // --- Foam Control Modifiers ---
 #define FOAM_THRESHOLD      0.17    
 #define FOAM_SHARPNESS      0.3     
 #define FOAM_SCALE          50.0
-#define FOAM_DISTORTION     0.001
+#define FOAM_DISTORTION     10.0
 #define FOAM_FLOW_SPEED     0.15
-#define FOAM_WEBBING        100.0
-#define FOAM_DENSITY        0.5    
+#define FOAM_WEBBING        2.0
+#define FOAM_DENSITY        0.4   
 
 // --- Caustics Modifiers ---
 
-#define CAUSTIC_SCALE       100.0
+#define CAUSTIC_SCALE       10.0
 #define CAUSTIC_SPEED       0.1
-#define CAUSTIC_INTENSITY   0.0
+#define CAUSTIC_INTENSITY   1.0
 
 // ============================================================================
 // RENDERING CORE
@@ -108,7 +108,7 @@ float calcCaustics(vec2 p, float time) {
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 uv = (fragCoord * 2.0 - iResolution.xy) / iResolution.y;
-    float manualTime = (iMouse.x / iResolution.x) * SUNSET_DURATION * 2.0;
+    float manualTime = (iMouse.x / iResolution.x) * SUNSET_DURATION * 5.0;
     float safeTime = iMouse.z > 0.0 ? manualTime : iTime;
 
     // Camera Configuration
@@ -145,29 +145,39 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
     // Process Ocean
     vec3 normal = getOceanNormal(p, safeTime, t);
+    
+    float horizonFlatten = smoothstep(20.0, 45.0, t);
+    normal = normalize(mix(normal, vec3(0.0, 1.0, 0.0), horizonFlatten));
+
     vec3 viewDir = -rayDir;
 
-    float microChop = gradientNoise(p.xz * GLITTER_FREQUENCY + safeTime * GLITTER_SPEED);
-    vec3 glitterNormal = normalize(normal + vec3(microChop * GLITTER_ROUGHNESS, 0.0, microChop * GLITTER_ROUGHNESS));
+    float grazingAngle = 1.0 - max(0.0, dot(vec3(0.0, 1.0, 0.0), viewDir));
+    float lodFade = smoothstep(0.0, 30.0, t);
+    float combinedLOD = clamp(lodFade + (grazingAngle * smoothstep(10.0, 30.0, t)), 0.0, 1.0);
 
-    // Optical Calculations
+    float dynamicGlitter = mix(GLITTER_ROUGHNESS, 0.0, combinedLOD);
+    float dynamicSpecPower = mix(SPECULAR_POWER, 20.0, combinedLOD);
+
+    float microChop = gradientNoise(p.xz * GLITTER_FREQUENCY + safeTime * GLITTER_SPEED);
+    vec3 glitterNormal = normalize(normal + vec3(microChop * dynamicGlitter, 0.0, microChop * dynamicGlitter));
+
     float facing = max(0.0, dot(normal, viewDir));
     vec3 baseColor = mix(COLOR_WATER_SHALLOW, COLOR_WATER_DEEP, facing);
 
     float waveForwardScattering = max(0.0, dot(sunDir, -viewDir));
     float internalGlowMask = pow(1.0 - facing, 4.0) * pow(waveForwardScattering, 8.0);
+    
     float causticIntensity = calcCaustics(p.xz + normal.xz * 0.5, safeTime);
     vec3 causticsLayer = COLOR_SUN * causticIntensity * max(0.0, sunDir.y);
     vec3 subsurfaceGlow = (vec3(0.0, 0.6, 0.5) * SCATTER_INTENSITY + causticsLayer) * internalGlowMask;
 
     vec3 halfVector = normalize(sunDir + viewDir);
-    float specGlint = pow(max(0.0, dot(glitterNormal, halfVector)), SPECULAR_POWER); 
+    float specGlint = pow(max(0.0, dot(glitterNormal, halfVector)), dynamicSpecPower); 
     vec3 sunReflection = COLOR_SUN * specGlint * SPECULAR_INTENSITY; 
 
     float fresnel = pow(1.0 - facing, 5.0);
     vec3 skyReflection = mix(COLOR_SKY_HORIZON, COLOR_SKY_ZENITH, normal.y) * fresnel * 0.6;
 
-    // Procedural Whitecap Foam Layer
     float crestMask = clamp((p.y - FOAM_THRESHOLD) / (CHOP_HEIGHT - FOAM_THRESHOLD), 0.0, 1.0);
     crestMask = pow(crestMask, FOAM_SHARPNESS);
 
@@ -178,14 +188,22 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 foamUV = p.xz * FOAM_SCALE + flowOffset * FOAM_DISTORTION;
 
     float baseFoamNoise = gradientNoise(foamUV); 
+    
+    vec2 lightDir2D = normalize(sunDir.xz);
+    float offsetNoise = gradientNoise(foamUV + lightDir2D * 0.5);
+    float foamSlopeHighlight = max(0.0, baseFoamNoise - offsetNoise) * 3.0;
+
     float foamWebbing = 1.0 - abs(baseFoamNoise * 1.5);
     foamWebbing = clamp(foamWebbing, 0.0, 1.0);
     foamWebbing = pow(foamWebbing, FOAM_WEBBING); 
 
-    float finalWhitecapMask = smoothstep(FOAM_DENSITY, 0.6, crestMask * foamWebbing);
+    float foamDistanceFade = 1.0 - smoothstep(15.0, 40.0, t);
+    float finalWhitecapMask = smoothstep(FOAM_DENSITY, 0.6, crestMask * foamWebbing) * foamDistanceFade;
 
-    float foamIllumination = max(0.4, dot(normal, sunDir)) * 0.8 + 0.2;
-    vec3 volumetricFoamColor = COLOR_FOAM * foamIllumination;
+    float baseIllumination = max(0.4, dot(normal, sunDir)) * 0.8 + 0.2;
+    float foamSpecular = pow(max(0.0, dot(normal, halfVector)), 15.0) * 0.5;
+    
+    vec3 volumetricFoamColor = COLOR_FOAM * (baseIllumination + foamSlopeHighlight * max(0.0, sunDir.y) + foamSpecular);
 
     float foamShadowMask = smoothstep(0.0, 0.5, crestMask * foamWebbing) - finalWhitecapMask;
 
@@ -193,7 +211,6 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     cleanOceanColor *= clamp(1.0 - foamShadowMask * 0.8, 0.0, 1.0); 
 
     vec3 fullOceanColor = mix(cleanOceanColor, volumetricFoamColor, finalWhitecapMask);
-
     // Apply Atmospheric Attenuation
     float horizonHaze = pow(1.0 - max(0.0, dot(normal, vec3(0.0, 1.0, 0.0))), 8.0);
     fullOceanColor = mix(fullOceanColor, COLOR_SKY_HORIZON, horizonHaze * 0.5);
