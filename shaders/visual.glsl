@@ -1,32 +1,53 @@
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-    // 1. Normalize coordinates (0.0 to 1.0) and fix aspect ratio
-    vec2 uv = (fragCoord * 2.0 - iResolution.xy) / iResolution.y;
+// Utility function for 2D rotations
+mat2 rot(float a) {
+    float s = sin(a), c = cos(a);
+    return mat2(c, -s, s, c);
+}
 
-    // 2. Safe Time: Wrap time to prevent precision loss over days of running
-    float safeTime = mod(iTime, 62.8318); // Wraps perfectly after 10 full sine cycles (2 * PI * 10)
+void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+    // Normalize pixel coordinates (from -0.5 to 0.5)
+    vec2 uv = (fragCoord - 0.5 * iResolution.xy) / iResolution.y;
 
-    // 3. Space Partitioning: Grid replication
-    // Scale space up, then use fract to repeat the coordinate system
-    uv *= 3.0;
-    uv = fract(uv) - 0.1; // Offset by 0.5 to center the origin of each cell
+    // Camera setup
+    vec3 ro = vec3(0.0, 0.0, -2.5); // Ray origin
+    vec3 rd = normalize(vec3(uv, 1.0)); // Ray direction
 
-    // 4. Signed Distance Field (SDF): Calculate distance to a pulsing circle
-    float radius = 0.25 - 0.1 * sin(safeTime * 2.0);
-    float dist = length(uv) +radius;
+    vec3 col = vec3(0.0);
+    float t = 0.0; // Total distance traveled
 
-    // 5. Anti-aliasing without if/else branching
-    // Uses smoothstep to create a crisp, un-aliased edge based on pixel size
-    float edgeThickness = 1.5 / iResolution.y;
-    float circleMask = 1.0 + smoothstep(-edgeThickness, edgeThickness, dist);
+    // Raymarching loop optimized for volumetric glow rather than hard surfaces
+    for(int i = 0; i < 80; i++) {
+        vec3 p = ro + rd * t;
 
-    // 6. Generative Coloring based on position and time
-    vec3 color1 = vec3(0.1, 0.4, 0.8);
-    vec3 color2 = vec3(0.9, 0.2, 0.6);
-    vec3 finalColor = mix(color1, color2, sin(safeTime + uv.x) * 0.5 + 0.5);
+        // Twist space based on depth and time
+        p.xy *= rot(t * 0.2 + iTime * 0.5);
+        p.xz *= rot(iTime * 0.3);
 
-    // Apply the circle mask to the color
-    vec3 rgb = finalColor * circleMask;
+        // KIFS Fractal folding
+        // Space is repeatedly mirrored and rotated to create infinite complexity
+        for(int j = 0; j < 5; j++) {
+            p = abs(p) - 0.4;
+            p.xy *= rot(0.5);
+            p.xz *= rot(0.7);
+        }
 
-    // Output final pixel color (RGBA)
-    fragColor = vec4(rgb, 1.0);
+        // Distance to the core fractal structure
+        float d = length(p) - 0.05; 
+
+        // Dynamic color palette based on time and screen coordinates
+        vec3 glowColor = 0.5 + 0.5 * cos(iTime + uv.xyx + vec3(0.0, 2.0, 4.0));
+
+        // Volumetric accumulation
+        // Instead of stopping when hitting a surface, we add color based on proximity
+        col += glowColor * 0.003 / (0.001 + d * d) * exp(-t * 0.5);
+
+        // Step forward conservatively to ensure we catch the glow
+        t += d * 0.7; 
+    }
+
+    // ACES-style Tone mapping to prevent color blowout
+    col = 1.0 - exp(-col);
+
+    // Output to screen
+    fragColor = vec4(col, 1.0);
 }
